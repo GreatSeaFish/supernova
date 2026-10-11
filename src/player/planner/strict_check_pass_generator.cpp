@@ -879,12 +879,17 @@ void
 StrictCheckPassGenerator::createThroughPass( const WorldModel & wm,
                                              const Receiver & receiver )
 {
-    static const int MIN_RECEIVE_STEP = 6;
+    // 直塞（ThroughPass）参数。
+    // 原实现把「球飞行 >= 6 cycle」「跑动距离 >= 6m」「球滚动 >= 5m」几道硬门槛叠加，
+    // 使「短距离、稍斜」的直塞在生成阶段就完全不存在（注释里也写着 Magic Number）。
+    // 这里把三道门槛下调、并把角度/距离网格加密，让更多向前空当进入候选；
+    // 拦截风险仍由 createPassCommon() 的 predictOpponentsReachStep() 检查与 risk 控制。
+    static const int MIN_RECEIVE_STEP = 4;             // 原 6
 #ifdef CREATE_SEVERAL_CANDIDATES_ON_SAME_POINT
     static const int MAX_RECEIVE_STEP = 35;
 #endif
 
-    static const double MIN_THROUGH_PASS_DIST = 5.0;
+    static const double MIN_THROUGH_PASS_DIST = 3.0;   // 原 5.0
     static const double MAX_THROUGH_PASS_DIST
         = 0.9 * inertia_final_distance( ServerParam::i().ballSpeedMax(),
                                         ServerParam::i().ballDecay() );
@@ -892,14 +897,14 @@ StrictCheckPassGenerator::createThroughPass( const WorldModel & wm,
         = ServerParam::i().ballSpeedMax()
         * std::pow( ServerParam::i().ballDecay(), MIN_RECEIVE_STEP );
 
-    static const int ANGLE_DIVS = 14;
-    static const double MIN_ANGLE = -40.0;
-    static const double MAX_ANGLE = +40.0;
+    static const int ANGLE_DIVS = 18;                  // 原 14（角度分辨率 5 度）
+    static const double MIN_ANGLE = -45.0;             // 原 -40.0
+    static const double MAX_ANGLE = +45.0;             // 原 +40.0
     static const double ANGLE_STEP = ( MAX_ANGLE - MIN_ANGLE ) / ANGLE_DIVS;
 
-    static const double MIN_MOVE_DIST = 6.0;
+    static const double MIN_MOVE_DIST = 4.0;           // 原 6.0
     static const double MAX_MOVE_DIST = 30.0 + 0.001;
-    static const double MOVE_DIST_STEP = 2.0;
+    static const double MOVE_DIST_STEP = 1.5;          // 原 2.0
 
     const ServerParam & SP = ServerParam::i();
     const PlayerType * ptype = receiver.player_->playerTypePtr();
@@ -1320,7 +1325,15 @@ StrictCheckPassGenerator::createPassCommon( const WorldModel & wm,
         }
         else
         {
-            if ( o_step + risk <= step + ( kick_count - 1 ) )
+            // 原实现: if ( o_step + risk <= step + ( kick_count - 1 ) )
+            // 即在对手到达步数上再叠加 (kick_count - 1) 的要求：
+            //   一脚踢：要求对手不早于球到达（o_step > step）；
+            //   两脚踢：要求对手再晚 1 cycle（o_step > step + 1）；三脚踢再晚 2 cycle。
+            // kick_count 只表示传球人需要多触一次球，并不代表对手能更早到达接球点，
+            // 结果是中远距离的 Direct/Leading 传球被系统性否决（Through 分支没有这项罚分）。
+            // 这里与 Through 分支对齐，去掉该额外要求；拦截风险仍由 risk 与
+            // predictOpponentsReachStep() 的严格检查负责。
+            if ( o_step + risk <= step )
             {
                 failed = true;
             }
@@ -1531,7 +1544,12 @@ StrictCheckPassGenerator::predictReceiverReachStep( const Receiver & receiver,
         //     dash_dist += 0.3;
         // }
 
-        dash_dist *= 1.05;
+        // G2d 原实现: dash_dist *= 1.05;
+        // 把 Leading 接球人的跑动距离放大 5%，等价于高估其到达时间，
+        // 进而抬高起脚步数 start_step（球必须更慢地到达接球点）——
+        // 而步数越大，createPassCommon() 里「对手必须晚于球到达」的检查越难过。
+        // 这里取消该放大，让 Leading 传球按真实跑动距离评估。
+        // dash_dist *= 1.05;
 
         AngleDeg dash_angle = ( pos - receiver.pos_ ).th() ;
 

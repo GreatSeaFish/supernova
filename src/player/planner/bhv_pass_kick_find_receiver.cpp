@@ -70,6 +70,18 @@
 
 using namespace rcsc;
 
+//
+// 传球执行阈值（可调参数）
+//
+
+//! 最近对手距离小于该值时，本周期先不做「找接球人」的转身/控球动作。
+//! 原值 4.0m 过于容易触发：对手只是从附近经过时，球员会整周期不传球。
+static const double PASS_NEAR_OPPONENT_DIST_THR = 3.0;
+
+//! 一脚传球（kick_step == 1）允许的接球人信息陈旧程度（cycle）。
+//! 超过该值才退化为「先控球等待」。原值 3 偏保守，放宽到 5。
+static const int PASS_DIRECT_KICK_SEEN_POS_THR = 5;
+
 
 class IntentionPassKickFindReceiver
     : public SoccerIntention {
@@ -339,7 +351,7 @@ Bhv_PassKickFindReceiver::execute( PlayerAgent * agent )
 
     if ( kick_step == 1
          //&& pass.targetPoint().x > -20.0
-         && receiver->seenPosCount() <= 3 )
+         && receiver->seenPosCount() <= PASS_DIRECT_KICK_SEEN_POS_THR )
     {
         dlog.addText( Logger::TEAM,
                       __FILE__": 1 step kick." );
@@ -361,7 +373,7 @@ Bhv_PassKickFindReceiver::execute( PlayerAgent * agent )
     }
 
     if ( ( kick_step == 1
-           && receiver->seenPosCount() > 3 )
+           && receiver->seenPosCount() > PASS_DIRECT_KICK_SEEN_POS_THR )
          || receiver->isGhost() )
     {
         agent->debugClient().addMessage( "Pass:FindHold2" );
@@ -464,7 +476,7 @@ Bhv_PassKickFindReceiver::doCheckReceiver( PlayerAgent * agent,
 
     double nearest_opp_dist = 65535.0;
     wm.getOpponentNearestTo( wm.ball().pos(), 10, &nearest_opp_dist );
-    if ( nearest_opp_dist < 4.0 )
+    if ( nearest_opp_dist < PASS_NEAR_OPPONENT_DIST_THR )
     {
         dlog.addText( Logger::TEAM,
                       __FILE__": (doCheckReceiver) exist near opponent. dist=%.2f",
