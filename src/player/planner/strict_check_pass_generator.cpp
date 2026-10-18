@@ -42,6 +42,7 @@
 #include "strict_check_pass_generator.h"
 
 #include "pass.h"
+#include "pass_quality.h"
 #include "field_analyzer.h"
 
 #include <rcsc/player/world_model.h>
@@ -393,12 +394,14 @@ StrictCheckPassGenerator::updateReceivers( const WorldModel & wm )
 
         if ( is_self_passer )
         {
-            // if ( (*p)->isGhost() ) continue;
+            if ( (*p)->isGhost() ) continue;
             if ( (*p)->unum() == Unum_Unknown ) continue;
             // if ( (*p)->unumCount() > 10 ) continue;
             if ( (*p)->posCount() > 10 ) continue;
             if ( (*p)->isTackling() ) continue;
-            if ( (*p)->pos().x > wm.offsideLineX() )
+            if ( SP.useOffside()
+                 && pass_quality::offside_at_release( (*p)->pos().x,
+                                                       M_first_point.x, wm.offsideLineX() ) )
             {
                 dlog.addText( Logger::PASS,
                               "(updateReceiver) unum=%d (%.2f %.2f) > offside=%.2f",
@@ -1259,13 +1262,26 @@ StrictCheckPassGenerator::createPassCommon( const WorldModel & wm,
                                                             first_ball_speed,
                                                             ball_move_angle );
 
+        const int kick_delay = pass_quality::preparation_cycles( kick_count );
+        if ( SP.useOffside()
+             && wm.gameMode().type() == GameMode::PlayOn
+             && pass_quality::offside_at_release(
+                 receiver.player_->playerTypePtr()->inertiaPoint(
+                     receiver.pos_, receiver.vel_, kick_delay ).x,
+                 M_first_point.x, wm.offsideLineX() ) )
+        {
+            // A slower candidate may need fewer preparation kicks.
+            continue;
+        }
+
         const AbstractPlayerObject * opponent = static_cast< const AbstractPlayerObject * >( 0 );
         int o_step = predictOpponentsReachStep( wm,
                                                 M_first_point,
                                                 first_ball_speed,
                                                 ball_move_angle,
                                                 receive_point,
-                                                step + ( kick_count - 1 ) + 5,
+                                                step + 5,
+                                                kick_delay,
                                                 &opponent );
 
         bool failed = false;
@@ -1325,14 +1341,7 @@ StrictCheckPassGenerator::createPassCommon( const WorldModel & wm,
         }
         else
         {
-            // 原实现: if ( o_step + risk <= step + ( kick_count - 1 ) )
-            // 即在对手到达步数上再叠加 (kick_count - 1) 的要求：
-            //   一脚踢：要求对手不早于球到达（o_step > step）；
-            //   两脚踢：要求对手再晚 1 cycle（o_step > step + 1）；三脚踢再晚 2 cycle。
-            // kick_count 只表示传球人需要多触一次球，并不代表对手能更早到达接球点，
-            // 结果是中远距离的 Direct/Leading 传球被系统性否决（Through 分支没有这项罚分）。
-            // 这里与 Through 分支对齐，去掉该额外要求；拦截风险仍由 risk 与
-            // predictOpponentsReachStep() 的严格检查负责。
+            // Opponent prediction includes preparation time on its own clock.
             if ( o_step + risk <= step )
             {
                 failed = true;
@@ -1342,7 +1351,7 @@ StrictCheckPassGenerator::createPassCommon( const WorldModel & wm,
         if ( failed )
         {
             // opponent can reach the ball faster than the receiver.
-            // then, break the loop, because ball speed is decreasing in the loop.
+            // Recheck slower speeds: they may require fewer preparation kicks.
 #ifdef DEBUG_PRINT_FAILED_PASS
             dlog.addText( Logger::PASS,
                           "%d: xxx type=%c unum=%d (%.1f %.1f) step=%d >= opp[%d]Step=%d,"
@@ -1355,7 +1364,7 @@ StrictCheckPassGenerator::createPassCommon( const WorldModel & wm,
                           first_ball_speed, receive_ball_speed,
                           kick_count );
 #endif
-            break;
+            continue;
         }
 
         CooperativeAction::Ptr pass( new Pass( M_passer->unum(),
@@ -1592,6 +1601,7 @@ StrictCheckPassGenerator::predictOpponentsReachStep( const WorldModel & wm,
                                                      const AngleDeg & ball_move_angle,
                                                      const Vector2D & receive_point,
                                                      const int max_cycle,
+                                                     const int kick_delay,
                                                      const AbstractPlayerObject ** opponent )
 {
     const Vector2D first_ball_vel = Vector2D::polar2vector( first_ball_speed, ball_move_angle );
@@ -1610,7 +1620,8 @@ StrictCheckPassGenerator::predictOpponentsReachStep( const WorldModel & wm,
                                              first_ball_vel,
                                              ball_move_angle,
                                              receive_point,
-                                             std::min( max_cycle, min_step ) );
+                                             std::min( max_cycle, min_step ),
+                                             kick_delay );
         if ( step < min_step
              || ( step == min_step
                   && o->bonus_distance_ > bonus_dist ) )
@@ -1624,8 +1635,9 @@ StrictCheckPassGenerator::predictOpponentsReachStep( const WorldModel & wm,
 #ifdef DEBUG_PREDICT_OPPONENT_REACH_STEP
     dlog.addText( Logger::PASS,
                   "______ opponent=%d(%.1f %.1f) step=%d",
-                  fastest_opponent->unum(),
-                  fastest_opponent->pos().x, fastest_opponent->pos().y,
+                  ( fastest_opponent ? fastest_opponent->unum() : 0 ),
+                  ( fastest_opponent ? fastest_opponent->pos().x : 0.0 ),
+                  ( fastest_opponent ? fastest_opponent->pos().y : 0.0 ),
                   min_step );
 #endif
 
@@ -1647,7 +1659,8 @@ StrictCheckPassGenerator::predictOpponentReachStep( const WorldModel & wm,
                                                     const Vector2D & first_ball_vel,
                                                     const AngleDeg & ball_move_angle,
                                                     const Vector2D & receive_point,
-                                                    const int max_cycle )
+                                                    const int max_cycle,
+                                                    const int kick_delay )
 {
     static const Rect2D penalty_area( Vector2D( ServerParam::i().theirPenaltyAreaLineX(),
                                                 -ServerParam::i().penaltyAreaHalfWidth() ),
@@ -1669,7 +1682,7 @@ StrictCheckPassGenerator::predictOpponentReachStep( const WorldModel & wm,
                   opponent.pos_.x, opponent.pos_.y );
 #endif
 
-    if ( min_cycle < 0 )
+    if ( min_cycle < 0 && kick_delay == 0 )
     {
 #ifdef DEBUG_PREDICT_OPPONENT_REACH_STEP
         dlog.addText( Logger::PASS,
@@ -1681,8 +1694,9 @@ StrictCheckPassGenerator::predictOpponentReachStep( const WorldModel & wm,
         return 1000;
     }
 
-    for ( int cycle = std::max( 1, min_cycle ); cycle <= max_cycle; ++cycle )
+    for ( int cycle = std::max( 1, min_cycle - kick_delay ); cycle <= max_cycle; ++cycle )
     {
+        const int elapsed_cycle = cycle + kick_delay;
         const Vector2D ball_pos = inertia_n_step_point( first_ball_pos,
                                                         first_ball_vel,
                                                         cycle,
@@ -1692,7 +1706,7 @@ StrictCheckPassGenerator::predictOpponentReachStep( const WorldModel & wm,
                                       ? SP.catchableArea()
                                       : ptype->kickableArea() );
 
-        const Vector2D inertia_pos = ptype->inertiaPoint( opponent.pos_, opponent.vel_, cycle );
+        const Vector2D inertia_pos = ptype->inertiaPoint( opponent.pos_, opponent.vel_, elapsed_cycle );
         const double target_dist = inertia_pos.dist( ball_pos );
 
         double dash_dist = target_dist;
@@ -1770,7 +1784,7 @@ StrictCheckPassGenerator::predictOpponentReachStep( const WorldModel & wm,
         }
 
         if ( dash_dist > ptype->realSpeedMax()
-             * ( cycle + std::min( opponent.player_->posCount(), 5 ) ) )
+             * ( elapsed_cycle + std::min( opponent.player_->posCount(), 5 ) ) )
         {
 #if 0
             dlog.addText( Logger::PASS,
@@ -1787,7 +1801,7 @@ StrictCheckPassGenerator::predictOpponentReachStep( const WorldModel & wm,
 
         int n_dash = ptype->cyclesToReachDistance( dash_dist );
 
-        if ( n_dash > cycle + opponent.player_->posCount() )
+        if ( n_dash > elapsed_cycle + opponent.player_->posCount() )
         {
 #ifdef DEBUG_PREDICT_OPPONENT_REACH_STEP
             dlog.addText( Logger::PASS,
@@ -1862,7 +1876,7 @@ StrictCheckPassGenerator::predictOpponentReachStep( const WorldModel & wm,
                       target_dist, control_area, dash_dist, opponent.bonus_distance_,
                       bonus_step );
 #endif
-        if ( n_step - bonus_step <= cycle )
+        if ( n_step - bonus_step <= elapsed_cycle )
         {
 #ifdef DEBUG_PREDICT_OPPONENT_REACH_STEP
             dlog.addText( Logger::PASS,

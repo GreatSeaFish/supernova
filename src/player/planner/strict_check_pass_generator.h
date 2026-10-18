@@ -171,6 +171,7 @@ private:
                                    const rcsc::AngleDeg & ball_move_angle,
                                    const rcsc::Vector2D & receive_point,
                                    const int max_cycle,
+                                   const int kick_delay,
                                    const rcsc::AbstractPlayerObject ** opponent );
     int predictOpponentReachStep( const rcsc::WorldModel & wm,
                                   const Opponent & opponent,
@@ -178,7 +179,8 @@ private:
                                   const rcsc::Vector2D & first_ball_vel,
                                   const rcsc::AngleDeg & ball_move_angle,
                                   const rcsc::Vector2D & receive_point,
-                                  const int max_cycle );
+                                  const int max_cycle,
+                                  const int kick_delay );
 };
 
 #endif

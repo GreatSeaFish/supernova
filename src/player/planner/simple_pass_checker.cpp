@@ -31,6 +31,7 @@
 #include "simple_pass_checker.h"
 
 #include "predict_state.h"
+#include "pass_quality.h"
 
 #include <rcsc/player/world_model.h>
 #include <rcsc/common/server_param.h>
@@ -118,7 +119,10 @@ SimplePassChecker::operator()( const PredictState & state,
         return false;
     }
 
-    if ( to.pos().x >= state.offsideLineX() )
+    if ( ServerParam::i().useOffside()
+         && pass_quality::offside_at_release( to.pos().x,
+                                               state.ball().pos().x,
+                                               state.offsideLineX() ) )
     {
 #ifdef DEBUG_PRINT
         dlog.addText( Logger::PASS,

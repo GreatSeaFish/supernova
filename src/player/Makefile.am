@@ -197,6 +197,7 @@ noinst_HEADERS = \
 	planner/hold_ball.h \
 	planner/neck_turn_to_receiver.h \
 	planner/pass.h \
+	planner/pass_quality.h \
 	planner/pass_checker.h \
 	planner/predict_ball_object.h \
 	planner/predict_player_object.h \

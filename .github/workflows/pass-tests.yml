@@ -1,0 +1,14 @@
+name: Pass policy regressions
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pass-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cmake -S tests -B build/pass-tests
+      - run: cmake --build build/pass-tests
+      - run: ctest --test-dir build/pass-tests --output-on-failure
