@@ -38,6 +38,7 @@
 #include "action_chain_holder.h"
 #include "action_chain_graph.h"
 #include "field_analyzer.h"
+#include "pass_quality.h"
 
 #include "neck_turn_to_receiver.h"
 
@@ -331,17 +332,26 @@ Bhv_PassKickFindReceiver::execute( PlayerAgent * agent )
         return false;
     }
 
-    // if ( receiver->isGhost() )
-    // {
-    //     dlog.addText( Logger::TEAM,
-    //                   __FILE__": receiver is a ghost." );
-    //     return false;
-    // }
+    if ( receiver->isGhost()
+         || ! pass.targetPoint().isValid()
+         || ! std::isfinite( pass.firstBallSpeed() )
+         || pass.firstBallSpeed() <= 0.0 )
+    {
+        return false;
+    }
+
+    if ( ServerParam::i().useOffside()
+         && wm.gameMode().type() == GameMode::PlayOn
+         && pass_quality::offside_at_release( receiver->pos().x,
+                                               wm.ball().pos().x,
+                                               wm.offsideLineX() ) )
+    {
+        return false;
+    }
 
     if ( wm.gameMode().type() != GameMode::PlayOn )
     {
-        doPassKick( agent, pass );
-        return true;
+        return doPassKick( agent, pass );
     }
 
     //
@@ -355,8 +365,7 @@ Bhv_PassKickFindReceiver::execute( PlayerAgent * agent )
     {
         dlog.addText( Logger::TEAM,
                       __FILE__": 1 step kick." );
-        doPassKick( agent, pass );
-        return true;
+        return doPassKick( agent, pass );
     }
 
     //
@@ -380,21 +389,27 @@ Bhv_PassKickFindReceiver::execute( PlayerAgent * agent )
         dlog.addText( Logger::TEAM,
                       __FILE__": (execute) hold ball." );
 
-        Body_HoldBall( true,
-                       pass.targetPoint(),
-                       pass.targetPoint() ).execute( agent );
-        doSayPass( agent, pass );
+        // Do not spend another cycle observing when an opponent can steal.
+        double nearest_opp_dist = 65535.0;
+        wm.getOpponentNearestTo( wm.ball().pos(), 10, &nearest_opp_dist );
+        if ( nearest_opp_dist < PASS_NEAR_OPPONENT_DIST_THR
+             || wm.kickableOpponent()
+             || wm.interceptTable().opponentStep() <= 1 )
+        {
+            return false;
+        }
+        const bool held = Body_HoldBall( true,
+                                         pass.targetPoint(),
+                                         pass.targetPoint() ).execute( agent );
         agent->setNeckAction( new Neck_TurnToReceiver( M_chain_graph ) );
-        return true;
+        return held;
     }
 
     //
     // pass kick
     //
 
-    doPassKick( agent, pass );
-
-    return true;
+    return doPassKick( agent, pass );
 }
 
 /*-------------------------------------------------------------------*/
@@ -417,16 +432,34 @@ Bhv_PassKickFindReceiver::doPassKick( PlayerAgent * agent,
     if ( pass.kickCount() == 1
          || agent->world().gameMode().type() != GameMode::PlayOn )
     {
-        Body_KickOneStep( pass.targetPoint(),
-                          pass.firstBallSpeed() ).execute( agent );
+        const WorldModel & wm = agent->world();
+        const Vector2D max_vel = KickTable::calc_max_velocity(
+            ( pass.targetPoint() - wm.ball().pos() ).th(),
+            wm.self().kickRate(), wm.ball().vel() );
+        if ( ! wm.ball().velValid()
+             || max_vel.r() < pass.firstBallSpeed() * 0.96 )
+        {
+            // An underpowered release invalidates the planned arrival/risk check.
+            return false;
+        }
+        if ( ! Body_KickOneStep( pass.targetPoint(),
+                                 pass.firstBallSpeed() ).execute( agent ) )
+        {
+            return false;
+        }
 
     }
     else
     {
-        Body_SmartKick( pass.targetPoint(),
-                        pass.firstBallSpeed(),
-                        pass.firstBallSpeed() * 0.96,
-                        3 ).execute( agent );
+        if ( ! Body_SmartKick( pass.targetPoint(),
+                               pass.firstBallSpeed(),
+                               pass.firstBallSpeed() * 0.96,
+                               std::max( 1, std::min( 3, pass.kickCount() ) ) ).execute( agent ) )
+        {
+            // SmartKick has already queued its hold-ball fallback.
+            agent->setNeckAction( new Neck_TurnToReceiver( M_chain_graph ) );
+            return true;
+        }
     }
     agent->setNeckAction( new Neck_TurnToReceiver( M_chain_graph ) );
     doSayPass( agent, pass );
@@ -775,6 +808,15 @@ Bhv_PassKickFindReceiver::getKeepBallVel( const rcsc::WorldModel & wm )
                 break;
             }
 
+            const int first_step = FieldAnalyzer::predict_player_reach_cycle(
+                *o, ball_next, (*o)->playerTypePtr()->kickableArea(),
+                0.0, 1, 1, 0, true );
+            if ( first_step <= 1 )
+            {
+                min_step = 0;
+                break;
+            }
+
             int o_step = FieldAnalyzer::predict_player_reach_cycle( *o,
                                                                     ball_next_next,
                                                                     (*o)->playerTypePtr()->kickableArea(),
@@ -786,6 +828,7 @@ Bhv_PassKickFindReceiver::getKeepBallVel( const rcsc::WorldModel & wm )
 
             if ( o_step <= 0 )
             {
+                min_step = 0;
                 break;
             }
 
@@ -805,6 +848,11 @@ Bhv_PassKickFindReceiver::getKeepBallVel( const rcsc::WorldModel & wm )
                       ball_speed,
                       min_step );
 #endif
+        // Both the preparation kick and the following turn need safe possession.
+        if ( min_step <= 2 )
+        {
+            continue;
+        }
         if ( min_step > best_opponent_step )
         {
             best_ball_vel = ball_vel;

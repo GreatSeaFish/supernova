@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.10)
+project(supernova_pass_tests LANGUAGES CXX)
+enable_testing()
+add_executable(pass_quality_test pass_quality_test.cpp)
+target_compile_features(pass_quality_test PRIVATE cxx_std_17)
+target_include_directories(pass_quality_test PRIVATE ../src/player)
+add_test(NAME pass_quality_scenarios COMMAND pass_quality_test)
