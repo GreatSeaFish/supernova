@@ -36,6 +36,7 @@
 
 #include "field_analyzer.h"
 #include "simple_pass_checker.h"
+#include "planner/pass_quality.h"
 
 #include <rcsc/player/player_evaluator.h>
 #include <rcsc/common/server_param.h>
@@ -495,12 +496,18 @@ evaluate_state( const PredictState & state, const rcsc::WorldModel & wm )
          && state.ball().pos().x >= wm.ball().pos().x - PASS_BONUS_MAX_BACKWARD_X )
     {
         double nearest_opp_dist = 1000.0;
+        const int horizon = static_cast< int >(
+            std::min< unsigned long >( state.spendTime(), 10 ) );
 
         for ( auto o = wm.opponentsFromSelf().begin(), o_end = wm.opponentsFromSelf().end();
               o != o_end;
               ++o )
         {
-            const double d = ( (*o)->pos() - state.ball().pos() ).length();
+            // Estimate space at reception, including observation uncertainty.
+            const Vector2D opp_pos = (*o)->playerTypePtr()->inertiaPoint(
+                (*o)->pos(), (*o)->vel(), horizon );
+            const double uncertainty = 0.2 * std::min( (*o)->posCount(), 5 );
+            const double d = std::max( 0.0, opp_pos.dist( state.ball().pos() ) - uncertainty );
             if ( nearest_opp_dist > d )
             {
                 nearest_opp_dist = d;
@@ -509,11 +516,13 @@ evaluate_state( const PredictState & state, const rcsc::WorldModel & wm )
 
         if ( nearest_opp_dist > PASS_BONUS_MIN_SPACE )
         {
-            point += PASS_POSSESSION_BONUS;
+            const double bonus = PASS_POSSESSION_BONUS
+                * pass_quality::possession_factor( nearest_opp_dist, state.spendTime() );
+            point += bonus;
 #ifdef DEBUG_PRINT
             dlog.addText( Logger::ACTION_CHAIN,
                           "(eval) pass possession bonus %f (%f) receiver=%d space=%.1f",
-                          PASS_POSSESSION_BONUS, point, holder_unum, nearest_opp_dist );
+                          bonus, point, holder_unum, nearest_opp_dist );
 #endif
         }
     }
